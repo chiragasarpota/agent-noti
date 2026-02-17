@@ -14,10 +14,10 @@ That's it. Hooks are added to both Claude Code and Codex automatically. Restart 
 
 ## What it does
 
-| Event | Sound | Agent |
-|---|---|---|
-| Agent finished | `idle.mp3` | Claude Code, Codex |
-| Needs your input | `input.mp3` | Claude Code |
+| Event | Sound | Claude Code | Codex |
+|---|---|---|---|
+| Agent finished | `idle.mp3` | Stop | agent-turn-complete |
+| Needs your input | `input.mp3` | PermissionRequest | approval-requested |
 
 ## Commands
 
