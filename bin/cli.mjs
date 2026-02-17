@@ -7,64 +7,58 @@ import { fileURLToPath } from "url";
 import { homedir } from "os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PKG_ROOT = join(__dirname, "..");
 const PLAY_SCRIPT = join(__dirname, "play.mjs");
-const SETTINGS_PATH = join(homedir(), ".claude", "settings.json");
+const CODEX_NOTIFY_SCRIPT = join(__dirname, "codex-notify.mjs");
+
+const CLAUDE_SETTINGS = join(homedir(), ".claude", "settings.json");
+const CODEX_CONFIG = join(homedir(), ".codex", "config.toml");
 
 const HOOK_ID = "agent-noti";
+const CODEX_MARKER = "# agent-noti";
 
-function buildHooks() {
+// --- Claude ---
+
+function buildClaudeHooks() {
   const idle = { type: "command", command: `node "${PLAY_SCRIPT}" idle` };
   const input = { type: "command", command: `node "${PLAY_SCRIPT}" input` };
-
   return {
     Stop: [{ hooks: [idle], metadata: { id: HOOK_ID } }],
     PermissionRequest: [{ hooks: [input], metadata: { id: HOOK_ID } }],
   };
 }
 
-function readSettings() {
-  const dir = dirname(SETTINGS_PATH);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  if (!existsSync(SETTINGS_PATH)) return {};
-  return JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
+function readJson(path) {
+  if (!existsSync(path)) return {};
+  return JSON.parse(readFileSync(path, "utf-8"));
 }
 
-function writeSettings(settings) {
-  writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n");
+function writeJson(path, data) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(data, null, 2) + "\n");
 }
 
-function removeOurHooks(hookEntries) {
-  if (!Array.isArray(hookEntries)) return hookEntries;
-  return hookEntries.filter((e) => !e.metadata || e.metadata.id !== HOOK_ID);
+function removeOurHooks(entries) {
+  if (!Array.isArray(entries)) return entries;
+  return entries.filter((e) => !e.metadata || e.metadata.id !== HOOK_ID);
 }
 
-function install() {
-  const settings = readSettings();
+function installClaude() {
+  const settings = readJson(CLAUDE_SETTINGS);
   if (!settings.hooks) settings.hooks = {};
 
-  for (const [event, entries] of Object.entries(buildHooks())) {
+  for (const [event, entries] of Object.entries(buildClaudeHooks())) {
     const existing = removeOurHooks(settings.hooks[event] || []);
     settings.hooks[event] = [...existing, ...entries];
   }
 
-  writeSettings(settings);
-
-  console.log("");
-  console.log("  agent-noti installed!");
-  console.log("  Restart Claude Code to activate.");
-  console.log("");
-  console.log("    agent-noti test        Play sounds");
-  console.log("    agent-noti uninstall   Remove hooks");
-  console.log("");
+  writeJson(CLAUDE_SETTINGS, settings);
+  console.log("  Claude Code: hooks added");
 }
 
-function uninstall() {
-  const settings = readSettings();
-  if (!settings.hooks) {
-    console.log("Nothing to uninstall.");
-    return;
-  }
+function uninstallClaude() {
+  if (!existsSync(CLAUDE_SETTINGS)) return;
+  const settings = readJson(CLAUDE_SETTINGS);
+  if (!settings.hooks) return;
 
   for (const event of Object.keys(settings.hooks)) {
     const cleaned = removeOurHooks(settings.hooks[event]);
@@ -73,10 +67,61 @@ function uninstall() {
   }
 
   if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
-  writeSettings(settings);
+  writeJson(CLAUDE_SETTINGS, settings);
+  console.log("  Claude Code: hooks removed");
+}
 
+// --- Codex ---
+
+function installCodex() {
+  mkdirSync(dirname(CODEX_CONFIG), { recursive: true });
+
+  const notifyLine = `notify = ["node", "${CODEX_NOTIFY_SCRIPT}"] ${CODEX_MARKER}`;
+
+  if (existsSync(CODEX_CONFIG)) {
+    let toml = readFileSync(CODEX_CONFIG, "utf-8");
+    // Remove existing agent-noti or notify lines
+    const lines = toml
+      .split("\n")
+      .filter((l) => !l.includes(CODEX_MARKER) && !l.match(/^\s*notify\s*=/));
+    // Insert at top (before any [section] headers) to stay at root level
+    const firstSection = lines.findIndex((l) => l.match(/^\s*\[/));
+    if (firstSection === -1) {
+      lines.push(notifyLine);
+    } else {
+      lines.splice(firstSection, 0, notifyLine);
+    }
+    writeFileSync(CODEX_CONFIG, lines.join("\n"));
+  } else {
+    writeFileSync(CODEX_CONFIG, notifyLine + "\n");
+  }
+
+  console.log("  Codex: notify added");
+}
+
+function uninstallCodex() {
+  if (!existsSync(CODEX_CONFIG)) return;
+  let toml = readFileSync(CODEX_CONFIG, "utf-8");
+  const lines = toml.split("\n").filter((l) => !l.includes(CODEX_MARKER));
+  writeFileSync(CODEX_CONFIG, lines.join("\n"));
+  console.log("  Codex: notify removed");
+}
+
+// --- CLI ---
+
+function install() {
   console.log("");
-  console.log("  agent-noti uninstalled!");
+  installClaude();
+  installCodex();
+  console.log("");
+  console.log("  Restart Claude Code / Codex to activate.");
+  console.log("");
+}
+
+function uninstall() {
+  console.log("");
+  uninstallClaude();
+  uninstallCodex();
   console.log("");
 }
 
@@ -85,7 +130,6 @@ function test() {
   for (const name of ["idle", "input"]) {
     console.log(`  Playing: ${name}`);
     execSync(`node "${PLAY_SCRIPT}" ${name}`, { stdio: "inherit" });
-    // Small pause between sounds
     execSync(process.platform === "win32" ? "timeout /t 1 >nul" : "sleep 1");
   }
   console.log("");
@@ -99,7 +143,7 @@ switch (cmd) {
   case "test":       test(); break;
   default:
     console.log("");
-    console.log("  agent-noti install     Add hooks to Claude Code");
+    console.log("  agent-noti install     Add hooks");
     console.log("  agent-noti uninstall   Remove hooks");
     console.log("  agent-noti test        Play sounds");
     console.log("");

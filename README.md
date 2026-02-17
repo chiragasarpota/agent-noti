@@ -1,21 +1,23 @@
 # agent-noti
 
-Audio notifications for Claude Code. Hear when Claude is done or needs your input.
+Audio notifications for Claude Code and Codex. Hear when your agent is done or needs your input.
 
 Works on macOS, Linux, and Windows.
 
 ## Install
 
 ```sh
-npm install -g agent-noti
+npm i -g agent-noti
 ```
 
-That's it. Hooks are added automatically. Restart Claude Code.
+That's it. Hooks are added to both Claude Code and Codex automatically. Restart your agent.
 
 ## What it does
 
-- **Claude finishes** → plays `idle.mp3`
-- **Claude needs input** (permission request) → plays `input.mp3`
+| Event | Sound | Agent |
+|---|---|---|
+| Agent finished | `idle.mp3` | Claude Code, Codex |
+| Needs your input | `input.mp3` | Claude Code |
 
 ## Commands
 
@@ -35,11 +37,7 @@ Hooks are removed automatically.
 
 ## Custom sounds
 
-Replace the mp3 files in the package's `sounds/` directory:
-
-```sh
-agent-noti test  # find where sounds are located
-```
+Replace `sounds/idle.mp3` and `sounds/input.mp3` in the package directory with your own files.
 
 ## Platform support
 
