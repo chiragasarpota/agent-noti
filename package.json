@@ -1,6 +1,6 @@
 {
   "name": "agent-noti",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Audio notifications for Claude Code — hear when Claude is done or needs your input",
   "bin": {
     "agent-noti": "./bin/cli.mjs"
@@ -13,7 +13,17 @@
     "postinstall": "node bin/cli.mjs install",
     "preuninstall": "node bin/cli.mjs uninstall"
   },
-  "os": ["darwin", "linux", "win32"],
-  "keywords": ["claude", "claude-code", "notifications", "audio", "hooks"],
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "notifications",
+    "audio",
+    "hooks"
+  ],
   "license": "MIT"
 }
