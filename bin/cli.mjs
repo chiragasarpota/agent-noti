@@ -103,7 +103,7 @@ function buildClaudeHooks() {
   return {
     Stop: [{ hooks: [idle], metadata: { id: HOOK_ID } }],
     PermissionRequest: [{ hooks: [input], metadata: { id: HOOK_ID } }],
-    PromptSubmit: [{ hooks: [stamp], metadata: { id: HOOK_ID } }],
+    UserPromptSubmit: [{ hooks: [stamp], metadata: { id: HOOK_ID } }],
   };
 }
 

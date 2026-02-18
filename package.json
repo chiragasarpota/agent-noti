@@ -1,6 +1,6 @@
 {
   "name": "agent-noti",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Audio notifications for Claude Code & Codex — customizable sound themes",
   "bin": {
     "agent-noti": "./bin/cli.mjs"
