@@ -3,6 +3,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "fs";
 import { join, dirname, extname } from "path";
 import { execSync, spawn } from "child_process";
+import { createInterface } from "readline";
 import { fileURLToPath } from "url";
 import { homedir, platform } from "os";
 
@@ -32,10 +33,6 @@ const SOUND_THEMES = [
   { name: "video-game",    desc: "Retro gaming" },
   { name: "digital-glass", desc: "Sleek & modern" },
 ];
-
-function getThemeNames() {
-  return SOUND_THEMES.map((s) => s.name);
-}
 
 // --- Sound file resolution ---
 
@@ -187,6 +184,38 @@ function uninstallCodex() {
 
 // --- Interactive picker ---
 
+function isCustomPath(val) {
+  return val && (val.startsWith("/") || /^[A-Z]:\\/.test(val));
+}
+
+function buildPickerThemes() {
+  const config = readConfig();
+  const themes = [SOUND_THEMES[0]]; // default first
+
+  // Show custom option below default if custom sounds have been configured
+  if (config.customIdle || config.customInput) {
+    themes.push({ name: "custom", desc: "Your custom sounds" });
+  }
+
+  // Regular themes
+  themes.push(...SOUND_THEMES.slice(1));
+
+  // Add custom trigger at the bottom
+  themes.push({ name: "+ Add custom", desc: "Import your own sounds" });
+
+  return themes;
+}
+
+function resolvePickerPreview(themeName, event, config) {
+  if (themeName === "custom") {
+    const path = event === "idle" ? config.customIdle : config.customInput;
+    if (path && existsSync(path)) return path;
+    return join(SOUNDS_DIR, `${event}.mp3`); // fallback
+  }
+  if (themeName === "+ Add custom") return null;
+  return findThemeFile(themeName, event);
+}
+
 function picker() {
   return new Promise((resolve) => {
     if (!process.stdin.isTTY) {
@@ -194,16 +223,18 @@ function picker() {
       return;
     }
 
-    const themes = SOUND_THEMES;
+    const themes = buildPickerThemes();
     const config = readConfig();
-    const currentTheme = config.idle || "default";
+
+    // Determine current theme for pre-selection
+    const currentTheme = isCustomPath(config.idle) ? "custom" : (config.idle || "default");
     let selected = Math.max(0, themes.findIndex((t) => t.name === currentTheme));
+
     let nowPlaying = "";
     let previewProc = null;
     const maxName = Math.max(...themes.map((s) => s.name.length));
 
-    // Total lines we render (for redraw cursor math)
-    const totalLines = themes.length + 5; // blank + title + blank + themes + blank + footer
+    const totalLines = themes.length + 5;
 
     function killPreview() {
       if (previewProc) {
@@ -212,14 +243,14 @@ function picker() {
       }
     }
 
-    function playPreview(theme, event) {
+    function playPreview(themeName, event) {
       killPreview();
-      const file = findThemeFile(theme, event);
-      if (!existsSync(file)) return;
-      nowPlaying = `${theme} ${event}`;
+      const file = resolvePickerPreview(themeName, event, config);
+      if (!file || !existsSync(file)) return;
+      nowPlaying = `${themeName} ${event}`;
       previewProc = spawnPlayer(file);
       previewProc.on("close", () => {
-        if (nowPlaying === `${theme} ${event}`) nowPlaying = "";
+        if (nowPlaying === `${themeName} ${event}`) nowPlaying = "";
         render();
       });
       render();
@@ -227,7 +258,6 @@ function picker() {
 
     function render(firstTime) {
       if (!firstTime) {
-        // Move cursor up to start of our block and clear
         process.stdout.write(`\x1b[${totalLines}A`);
       }
 
@@ -240,18 +270,27 @@ function picker() {
         const arrow = isSelected ? "\x1b[36m> " : "  ";
         const color = isSelected ? "\x1b[36m" : "\x1b[90m";
         const reset = "\x1b[0m";
-        const active = config.idle === theme.name && config.input === theme.name
-          ? " \x1b[32m(current)\x1b[0m" : "";
+
+        let active = "";
+        if (theme.name === "custom" && isCustomPath(config.idle)) {
+          active = " \x1b[32m(current)\x1b[0m";
+        } else if (theme.name !== "custom" && theme.name !== "+ Add custom"
+          && config.idle === theme.name && config.input === theme.name) {
+          active = " \x1b[32m(current)\x1b[0m";
+        }
+
         process.stdout.write(
           `\x1b[2K  ${arrow}${color}${theme.name.padEnd(maxName + 2)}${theme.desc}${reset}${active}\n`
         );
       });
 
       process.stdout.write("\x1b[2K\n");
+      const isAddCustom = themes[selected].name === "+ Add custom";
       const playInfo = nowPlaying ? `  \x1b[33m♪ ${nowPlaying}\x1b[0m` : "";
-      process.stdout.write(
-        `\x1b[2K  \x1b[90m[up/down] Navigate  [<] Idle  [>] Input  [enter] Select  [q] Quit\x1b[0m${playInfo}\n`
-      );
+      const controls = isAddCustom
+        ? `\x1b[2K  \x1b[90m[up/down] Navigate  [enter] Add custom  [q] Quit\x1b[0m${playInfo}\n`
+        : `\x1b[2K  \x1b[90m[up/down] Navigate  [<] Play idle  [>] Play input  [enter] Select  [q] Quit\x1b[0m${playInfo}\n`;
+      process.stdout.write(controls);
     }
 
     const stdin = process.stdin;
@@ -269,14 +308,12 @@ function picker() {
     }
 
     function onKey(key) {
-      // Ctrl+C
       if (key === "\x03") {
         cleanup();
         console.log("");
         process.exit(0);
       }
 
-      // q = quit
       if (key === "q" || key === "Q") {
         cleanup();
         console.log("\n  No changes made.\n");
@@ -284,28 +321,23 @@ function picker() {
         return;
       }
 
-      // Enter = confirm
       if (key === "\r" || key === "\n") {
         cleanup();
         resolve(themes[selected].name);
         return;
       }
 
-      // Arrow up
       if (key === "\x1b[A" || key === "k") {
         selected = (selected - 1 + themes.length) % themes.length;
         render();
       }
-      // Arrow down
       else if (key === "\x1b[B" || key === "j") {
         selected = (selected + 1) % themes.length;
         render();
       }
-      // Arrow left = preview idle
       else if (key === "\x1b[D") {
         playPreview(themes[selected].name, "idle");
       }
-      // Arrow right = preview input
       else if (key === "\x1b[C") {
         playPreview(themes[selected].name, "input");
       }
@@ -326,13 +358,14 @@ async function install() {
   console.log("");
 
   if (process.stdin.isTTY) {
-    const choice = await picker();
-    if (choice) {
-      const config = readConfig();
-      config.idle = choice;
-      config.input = choice;
-      writeConfig(config);
-      console.log(`\n  Theme set to: ${choice}\n`);
+    while (true) {
+      const choice = await picker();
+      if (choice === "+ Add custom") {
+        await addCustom();
+        continue;
+      }
+      if (choice) applyPickerChoice(choice);
+      break;
     }
   } else {
     console.log("  Run 'agent-noti pick' to choose a sound theme.\n");
@@ -376,136 +409,159 @@ function sounds() {
     console.log(`    ${name.padEnd(maxName + 2)} ${desc}${marker}`);
   }
 
-  if (config.idle && config.idle.startsWith("/")) {
-    console.log(`    ${"(custom idle)".padEnd(maxName + 2)} ${config.idle} [idle]`);
-  }
-  if (config.input && config.input.startsWith("/")) {
-    console.log(`    ${"(custom input)".padEnd(maxName + 2)} ${config.input} [input]`);
+  if (config.customIdle || config.customInput) {
+    const isActive = isCustomPath(config.idle) || isCustomPath(config.input);
+    const marker = isActive ? " [active]" : "";
+    console.log(`    ${"custom".padEnd(maxName + 2)} Your custom sounds${marker}`);
   }
 
+  const idleLabel = isCustomPath(config.idle) ? "custom" : (config.idle || "default");
+  const inputLabel = isCustomPath(config.input) ? "custom" : (config.input || "default");
   console.log("");
-  console.log("  Theme:  idle=%s, input=%s", config.idle || "default", config.input || "default");
+  console.log("  Theme:  idle=%s, input=%s", idleLabel, inputLabel);
   const volBar = "#".repeat(vol) + "-".repeat(10 - vol);
   console.log(`  Volume: [${volBar}] ${vol}/10${muted ? "  (MUTED)" : ""}`);
   console.log("");
 }
 
-function set(args) {
-  const themes = getThemeNames();
+// --- Interactive add-custom ---
 
-  if (args.length === 1) {
-    const theme = args[0];
-    if (!themes.includes(theme)) {
-      console.log(`\n  Unknown theme: ${theme}`);
-      console.log(`  Available: ${themes.join(", ")}\n`);
-      return;
-    }
-    const config = readConfig();
-    config.idle = theme;
-    config.input = theme;
-    writeConfig(config);
-    console.log(`\n  Both idle & input set to: ${theme}\n`);
-    return;
-  }
+function selectOption(title, options) {
+  return new Promise((resolve) => {
+    if (!process.stdin.isTTY) { resolve(null); return; }
 
-  if (args.length === 2) {
-    const [event, theme] = args;
-    if (event !== "idle" && event !== "input") {
-      console.log(`\n  Invalid event: ${event} (use idle or input)\n`);
-      return;
-    }
-    if (!themes.includes(theme)) {
-      console.log(`\n  Unknown theme: ${theme}`);
-      console.log(`  Available: ${themes.join(", ")}\n`);
-      return;
-    }
-    const config = readConfig();
-    config[event] = theme;
-    writeConfig(config);
-    console.log(`\n  ${event} sound set to: ${theme}\n`);
-    return;
-  }
+    let selected = 0;
+    const totalLines = options.length + 4; // blank + title + blank + options + blank
 
-  console.log("\n  Usage:");
-  console.log("    agent-noti set <theme>              Set both idle & input");
-  console.log("    agent-noti set <idle|input> <theme>  Set one event\n");
+    function render(firstTime) {
+      if (!firstTime) process.stdout.write(`\x1b[${totalLines}A`);
+      process.stdout.write("\x1b[2K\n");
+      process.stdout.write(`\x1b[2K  \x1b[1m${title}\x1b[0m\n`);
+      process.stdout.write("\x1b[2K\n");
+      options.forEach((opt, i) => {
+        const arrow = i === selected ? "\x1b[36m> " : "  ";
+        const color = i === selected ? "\x1b[36m" : "\x1b[90m";
+        process.stdout.write(`\x1b[2K  ${arrow}${color}${opt.label}\x1b[0m\n`);
+      });
+      process.stdout.write("\x1b[2K\n");
+    }
+
+    const stdin = process.stdin;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+    render(true);
+
+    function cleanup() {
+      stdin.removeListener("data", onKey);
+      stdin.setRawMode(false);
+      stdin.pause();
+    }
+
+    function onKey(key) {
+      if (key === "\x03") { cleanup(); console.log(""); process.exit(0); }
+      if (key === "q" || key === "Q") { cleanup(); resolve(null); return; }
+      if (key === "\r" || key === "\n") { cleanup(); resolve(options[selected].value); return; }
+      if (key === "\x1b[A" || key === "k") { selected = (selected - 1 + options.length) % options.length; render(); }
+      else if (key === "\x1b[B" || key === "j") { selected = (selected + 1) % options.length; render(); }
+    }
+    stdin.on("data", onKey);
+  });
 }
 
-function setCustom(args) {
-  if (args.length < 1 || args.length > 2) {
-    console.log("\n  Usage:");
-    console.log("    agent-noti set-custom <path>                Set for both idle & input");
-    console.log("    agent-noti set-custom <idle|input> <path>   Set for one event\n");
+function promptPath(label) {
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(`  ${label}`, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+function copyCustomSound(sourcePath, event) {
+  const ext = extname(sourcePath);
+  const destName = `custom-${event}${ext}`;
+  const destPath = join(CUSTOM_SOUNDS_DIR, destName);
+  mkdirSync(CUSTOM_SOUNDS_DIR, { recursive: true });
+  copyFileSync(sourcePath, destPath);
+  return destPath;
+}
+
+async function addCustom() {
+  if (!process.stdin.isTTY) {
+    console.log("\n  This command requires an interactive terminal.\n");
     return;
   }
 
-  // set-custom <path> — sets both events to same custom file
-  // set-custom <event> <path> — sets one event
-  let event, sourcePath;
-  if (args.length === 1) {
-    sourcePath = args[0];
-    event = null; // both
-  } else {
-    [event, sourcePath] = args;
-    if (event !== "idle" && event !== "input") {
-      console.log(`\n  Invalid event: ${event} (use idle or input)\n`);
-      return;
+  const config = readConfig();
+  let idlePath = null;
+
+  // Step 1: Idle sound
+  const idleChoice = await selectOption("Idle sound (when agent finishes):", [
+    { label: "Enter file path", value: "path" },
+    { label: "Skip (use default)", value: "skip" },
+  ]);
+
+  if (idleChoice === null) { console.log("\n  No changes made.\n"); return; }
+
+  if (idleChoice === "path") {
+    console.log("");
+    const p = await promptPath("Path to idle sound: ");
+    if (!p) {
+      console.log("  No path provided, using default.\n");
+    } else if (!existsSync(p)) {
+      console.log(`  File not found: ${p} — using default.\n`);
+    } else {
+      idlePath = p;
+      const dest = copyCustomSound(p, "idle");
+      config.idle = dest;
+      config.customIdle = dest;
+      console.log(`  Copied to: ${dest}\n`);
     }
   }
 
-  if (!existsSync(sourcePath)) {
-    console.log(`\n  File not found: ${sourcePath}\n`);
-    return;
+  if (!idlePath && idleChoice !== "skip") {
+    config.idle = config.idle || "default";
   }
 
-  const ext = extname(sourcePath);
-  const config = readConfig();
+  // Step 2: Input sound
+  const inputOptions = [
+    { label: "Enter file path", value: "path" },
+    ...(idlePath ? [{ label: "Same as idle", value: "same" }] : []),
+    { label: "Skip (use default)", value: "skip" },
+  ];
 
-  const events = event ? [event] : ["idle", "input"];
-  for (const ev of events) {
-    const destName = `custom-${ev}${ext}`;
-    const destPath = join(CUSTOM_SOUNDS_DIR, destName);
-    mkdirSync(CUSTOM_SOUNDS_DIR, { recursive: true });
-    copyFileSync(sourcePath, destPath);
-    config[ev] = destPath;
-    console.log(`\n  Copied to: ${destPath}`);
+  const inputChoice = await selectOption("Input sound (when agent needs approval):", inputOptions);
+
+  if (inputChoice === null) { console.log("\n  No changes made.\n"); return; }
+
+  if (inputChoice === "path") {
+    console.log("");
+    const p = await promptPath("Path to input sound: ");
+    if (!p) {
+      console.log("  No path provided, using default.\n");
+    } else if (!existsSync(p)) {
+      console.log(`  File not found: ${p} — using default.\n`);
+    } else {
+      const dest = copyCustomSound(p, "input");
+      config.input = dest;
+      config.customInput = dest;
+      console.log(`  Copied to: ${dest}\n`);
+    }
+  } else if (inputChoice === "same" && idlePath) {
+    const dest = copyCustomSound(idlePath, "input");
+    config.input = dest;
+    config.customInput = dest;
+    console.log(`\n  Input set to same as idle.\n`);
   }
 
-  // Ensure both events have a value (fallback to default)
+  // Ensure both have values
   if (!config.idle) config.idle = "default";
   if (!config.input) config.input = "default";
 
   writeConfig(config);
-  console.log(`  Custom sound applied.\n`);
-}
-
-function preview(args) {
-  if (args.length < 1) {
-    console.log("\n  Usage: agent-noti preview <theme>\n");
-    return;
-  }
-
-  const theme = args[0];
-  const themes = getThemeNames();
-
-  if (!themes.includes(theme)) {
-    console.log(`\n  Unknown theme: ${theme}`);
-    console.log(`  Available: ${themes.join(", ")}\n`);
-    return;
-  }
-
-  console.log("");
-  for (const event of ["idle", "input"]) {
-    const file = findThemeFile(theme, event);
-    console.log(`  Playing ${theme} ${event}...`);
-    try {
-      execSync(`node "${PLAY_SCRIPT}" --file "${file}"`, { stdio: "inherit" });
-      execSync(process.platform === "win32" ? "timeout /t 2 >nul" : "sleep 2");
-    } catch {
-      console.log(`  Could not play ${theme}-${event}`);
-    }
-  }
-  console.log("");
+  console.log("  Custom sounds applied.\n");
 }
 
 function mute() {
@@ -551,14 +607,30 @@ function reset() {
   console.log("\n  Reset to defaults (theme=default, volume=10, unmuted).\n");
 }
 
-async function pick() {
-  const choice = await picker();
-  if (choice) {
-    const config = readConfig();
+function applyPickerChoice(choice) {
+  const config = readConfig();
+  if (choice === "custom") {
+    config.idle = config.customIdle || "default";
+    config.input = config.customInput || "default";
+    writeConfig(config);
+    console.log(`\n  Theme set to: custom\n`);
+  } else {
     config.idle = choice;
     config.input = choice;
     writeConfig(config);
     console.log(`\n  Theme set to: ${choice}\n`);
+  }
+}
+
+async function pick() {
+  while (true) {
+    const choice = await picker();
+    if (choice === "+ Add custom") {
+      await addCustom();
+      continue; // restart picker to show updated custom entry
+    }
+    if (choice) applyPickerChoice(choice);
+    break;
   }
 }
 
@@ -569,33 +641,28 @@ const args = process.argv.slice(3);
 
 async function main() {
   switch (cmd) {
-    case "install":     await install(); break;
-    case "uninstall":   uninstall(); break;
-    case "test":        test(); break;
-    case "sounds":      sounds(); break;
-    case "set":         set(args); break;
-    case "set-custom":  setCustom(args); break;
-    case "preview":     preview(args); break;
-    case "reset":       reset(); break;
-    case "pick":        await pick(); break;
-    case "mute":        mute(); break;
-    case "unmute":      unmute(); break;
-    case "volume":      volume(args); break;
+    case "install":  case "i":  await install(); break;
+    case "uninstall":            uninstall(); break;
+    case "test":     case "t":  test(); break;
+    case "sounds":   case "s":  sounds(); break;
+    case "pick":     case "p":  await pick(); break;
+    case "add-custom": case "ac": await addCustom(); break;
+    case "volume":   case "v":  volume(args); break;
+    case "mute":     case "m":  mute(); break;
+    case "unmute":   case "u":  unmute(); break;
+    case "reset":    case "r":  reset(); break;
     default:
       console.log("");
-      console.log("  agent-noti install                          Add hooks + pick theme");
-      console.log("  agent-noti uninstall                        Remove hooks");
-      console.log("  agent-noti test                             Play current sounds");
-      console.log("  agent-noti sounds                           List available themes");
-      console.log("  agent-noti pick                             Interactive sound picker");
-      console.log("  agent-noti set <theme>                      Set both idle & input");
-      console.log("  agent-noti set <idle|input> <theme>         Set one event");
-      console.log("  agent-noti set-custom [idle|input] <file>   Use custom sound");
-      console.log("  agent-noti preview <theme>                  Preview a theme");
-      console.log("  agent-noti volume <1-10>                    Set volume level");
-      console.log("  agent-noti mute                             Mute notifications");
-      console.log("  agent-noti unmute                           Unmute notifications");
-      console.log("  agent-noti reset                            Reset everything");
+      console.log("  agent-noti install   (i)   Add hooks + pick theme");
+      console.log("  agent-noti uninstall       Remove hooks");
+      console.log("  agent-noti test      (t)   Play current sounds");
+      console.log("  agent-noti sounds    (s)   List available themes");
+      console.log("  agent-noti pick      (p)   Interactive sound picker");
+      console.log("  agent-noti add-custom(ac)  Use your own sound files");
+      console.log("  agent-noti volume    (v)   Set volume <1-10>");
+      console.log("  agent-noti mute      (m)   Mute notifications");
+      console.log("  agent-noti unmute    (u)   Unmute notifications");
+      console.log("  agent-noti reset     (r)   Reset everything");
       console.log("");
   }
 }
