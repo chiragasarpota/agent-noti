@@ -9,6 +9,7 @@ import { homedir, platform } from "os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLAY_SCRIPT = join(__dirname, "play.mjs");
+const STAMP_SCRIPT = join(__dirname, "stamp.mjs");
 const CODEX_NOTIFY_SCRIPT = join(__dirname, "codex-notify.mjs");
 const SOUNDS_DIR = join(__dirname, "..", "sounds");
 
@@ -98,9 +99,11 @@ function writeConfig(config) {
 function buildClaudeHooks() {
   const idle = { type: "command", command: `node "${PLAY_SCRIPT}" idle` };
   const input = { type: "command", command: `node "${PLAY_SCRIPT}" input` };
+  const stamp = { type: "command", command: `node "${STAMP_SCRIPT}"` };
   return {
     Stop: [{ hooks: [idle], metadata: { id: HOOK_ID } }],
     PermissionRequest: [{ hooks: [input], metadata: { id: HOOK_ID } }],
+    PromptSubmit: [{ hooks: [stamp], metadata: { id: HOOK_ID } }],
   };
 }
 
@@ -631,6 +634,7 @@ function ntfy() {
         server: setup.server,
         topic: setup.topic,
         priority: "default",
+        threshold: 0,
         idle: true,
         input: true,
       };
@@ -641,17 +645,21 @@ function ntfy() {
     const rows = ["idle", "input"];
     let selected = 0;
     let statusMsg = "";
-    const totalLines = 12;
+    const totalLines = 13;
 
     function render(firstTime) {
       if (!firstTime) process.stdout.write(`\x1b[${totalLines}A`);
 
+      const thresh = ntfyConf.threshold ?? 0;
+      const threshLabel = thresh === 0 ? "off (always notify)" : `${thresh} min`;
+
       process.stdout.write("\x1b[2K\n");
       process.stdout.write(`\x1b[2K  \x1b[1mntfy.sh push notifications\x1b[0m\n`);
       process.stdout.write("\x1b[2K\n");
-      process.stdout.write(`\x1b[2K  Server:   \x1b[36m${ntfyConf.server || "https://ntfy.sh"}\x1b[0m\n`);
-      process.stdout.write(`\x1b[2K  Topic:    \x1b[36m${ntfyConf.topic}\x1b[0m\n`);
-      process.stdout.write(`\x1b[2K  Priority: \x1b[36m${ntfyConf.priority || "default"}\x1b[0m\n`);
+      process.stdout.write(`\x1b[2K  Server:    \x1b[36m${ntfyConf.server || "https://ntfy.sh"}\x1b[0m\n`);
+      process.stdout.write(`\x1b[2K  Topic:     \x1b[36m${ntfyConf.topic}\x1b[0m\n`);
+      process.stdout.write(`\x1b[2K  Priority:  \x1b[36m${ntfyConf.priority || "default"}\x1b[0m\n`);
+      process.stdout.write(`\x1b[2K  Threshold: \x1b[36m${threshLabel}\x1b[0m\n`);
       process.stdout.write("\x1b[2K\n");
 
       for (let i = 0; i < rows.length; i++) {
@@ -700,6 +708,13 @@ function ntfy() {
       const priIdx = NTFY_PRIORITIES.indexOf(ntfyConf.priority || "default");
       const newPri = await ntfyPrompt(`Priority [${NTFY_PRIORITIES.join("/")}] (${NTFY_PRIORITIES[priIdx]}): `);
       if (newPri && NTFY_PRIORITIES.includes(newPri)) ntfyConf.priority = newPri;
+
+      const curThresh = ntfyConf.threshold ?? 0;
+      const newThresh = await ntfyPrompt(`Threshold in minutes, 0=off (${curThresh}): `);
+      if (newThresh !== "") {
+        const val = parseInt(newThresh, 10);
+        if (!isNaN(val) && val >= 0) ntfyConf.threshold = val;
+      }
 
       // Re-enter raw mode and re-render
       stdin.setRawMode(true);

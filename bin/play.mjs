@@ -13,11 +13,14 @@ import { execFile, exec } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { platform, homedir } from "os";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SOUNDS_DIR = join(__dirname, "..", "sounds");
-const CONFIG_PATH = join(homedir(), ".agent-noti", "config.json");
+const CONFIG_DIR = join(homedir(), ".agent-noti");
+const CONFIG_PATH = join(CONFIG_DIR, "config.json");
+const LAST_PROMPT_PATH = join(CONFIG_DIR, "last-prompt");
+const LAST_EVENT_PATH = join(CONFIG_DIR, "last-event");
 
 const EVENTS = ["idle", "input"];
 
@@ -107,7 +110,33 @@ async function sendNtfy(event, config) {
 
   // Send ntfy push notification for actual events (not --file previews)
   if (EVENTS.includes(arg)) {
-    await sendNtfy(arg, config);
+    const threshold = config.ntfy?.threshold ?? 0; // minutes, 0 = always
+    let shouldSend = true;
+
+    if (threshold > 0) {
+      // Claude Code: PromptSubmit hook writes last-prompt (exact task start)
+      // Codex fallback: use last-event (time since previous event)
+      const tsFile = existsSync(LAST_PROMPT_PATH) ? LAST_PROMPT_PATH : LAST_EVENT_PATH;
+      try {
+        if (existsSync(tsFile)) {
+          const started = parseInt(readFileSync(tsFile, "utf-8"), 10);
+          if (!isNaN(started)) {
+            const elapsed = (Date.now() - started) / 60000;
+            shouldSend = elapsed >= threshold;
+          }
+        }
+      } catch {}
+    }
+
+    if (shouldSend) {
+      await sendNtfy(arg, config);
+    }
+
+    // Write last-event timestamp (Codex fallback for threshold)
+    try {
+      mkdirSync(CONFIG_DIR, { recursive: true });
+      writeFileSync(LAST_EVENT_PATH, String(Date.now()));
+    } catch {}
   }
 
   // Mute check (skip for --file, which is used by picker previews)

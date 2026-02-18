@@ -102,8 +102,10 @@ agent-noti ntfy
 This opens an interactive TUI where you can:
 - Set your ntfy server and topic
 - Toggle which events send push notifications (task complete / approval needed)
-- Set priority level
+- Set priority level and time threshold
 - Send a test notification
+
+The **threshold** setting (in minutes) skips push notifications for quick tasks. For example, set it to `5` and you'll only get pinged if the agent ran for at least 5 minutes. Set to `0` to always notify.
 
 On first run you'll be prompted for a topic name. Subscribe to the same topic in the [ntfy app](https://ntfy.sh) (Android/iOS/web) to receive notifications.
 
@@ -123,6 +125,7 @@ Sends a test notification to your configured topic without opening the interacti
 | `ntfy.server` | `https://ntfy.sh` | ntfy server URL |
 | `ntfy.topic` | — | Your topic name (required) |
 | `ntfy.priority` | `default` | `min`, `low`, `default`, `high`, `urgent` |
+| `ntfy.threshold` | `0` | Min minutes before notifying (0 = always) |
 | `ntfy.idle` | `true` | Notify on task complete |
 | `ntfy.input` | `true` | Notify on approval needed |
 
@@ -141,6 +144,7 @@ All settings are stored in `~/.agent-noti/config.json`:
     "server": "https://ntfy.sh",
     "topic": "my-agent-alerts",
     "priority": "default",
+    "threshold": 5,
     "idle": true,
     "input": true
   }
