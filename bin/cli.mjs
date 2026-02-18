@@ -421,6 +421,14 @@ function sounds() {
   console.log("  Theme:  idle=%s, input=%s", idleLabel, inputLabel);
   const volBar = "#".repeat(vol) + "-".repeat(10 - vol);
   console.log(`  Volume: [${volBar}] ${vol}/10${muted ? "  (MUTED)" : ""}`);
+
+  if (config.ntfy && config.ntfy.topic) {
+    const n = config.ntfy;
+    const server = (n.server || "https://ntfy.sh").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    const status = n.enabled ? "enabled" : "disabled";
+    console.log(`  ntfy:   ${status} (${server}/${n.topic})`);
+  }
+
   console.log("");
 }
 
@@ -564,6 +572,232 @@ async function addCustom() {
   console.log("  Custom sounds applied.\n");
 }
 
+// --- ntfy.sh push notifications ---
+
+const NTFY_PRIORITIES = ["min", "low", "default", "high", "urgent"];
+
+function ntfyPrompt(label) {
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(`  ${label}`, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+async function ntfyInitialSetup() {
+  console.log("\n  First-time ntfy.sh setup\n");
+  const topic = await ntfyPrompt("Topic (required): ");
+  if (!topic) {
+    console.log("  Topic is required. Aborting.\n");
+    return null;
+  }
+  const server = await ntfyPrompt("Server (enter for https://ntfy.sh): ");
+  return { topic, server: server || "https://ntfy.sh" };
+}
+
+async function ntfySendTest(ntfyConfig) {
+  const server = (ntfyConfig.server || "https://ntfy.sh").replace(/\/+$/, "");
+  const url = `${server}/${ntfyConfig.topic}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Title: "Test Notification",
+      Priority: ntfyConfig.priority || "default",
+      Tags: "bell",
+    },
+    body: "agent-noti test notification",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
+function ntfy() {
+  return new Promise(async (resolve) => {
+    if (!process.stdin.isTTY) {
+      console.log("\n  This command requires an interactive terminal.\n");
+      resolve();
+      return;
+    }
+
+    const config = readConfig();
+
+    // First-time setup: prompt for topic
+    if (!config.ntfy || !config.ntfy.topic) {
+      const setup = await ntfyInitialSetup();
+      if (!setup) { resolve(); return; }
+      config.ntfy = {
+        enabled: true,
+        server: setup.server,
+        topic: setup.topic,
+        priority: "default",
+        idle: true,
+        input: true,
+      };
+      writeConfig(config);
+    }
+
+    const ntfyConf = config.ntfy;
+    const rows = ["idle", "input"];
+    let selected = 0;
+    let statusMsg = "";
+    const totalLines = 12;
+
+    function render(firstTime) {
+      if (!firstTime) process.stdout.write(`\x1b[${totalLines}A`);
+
+      process.stdout.write("\x1b[2K\n");
+      process.stdout.write(`\x1b[2K  \x1b[1mntfy.sh push notifications\x1b[0m\n`);
+      process.stdout.write("\x1b[2K\n");
+      process.stdout.write(`\x1b[2K  Server:   \x1b[36m${ntfyConf.server || "https://ntfy.sh"}\x1b[0m\n`);
+      process.stdout.write(`\x1b[2K  Topic:    \x1b[36m${ntfyConf.topic}\x1b[0m\n`);
+      process.stdout.write(`\x1b[2K  Priority: \x1b[36m${ntfyConf.priority || "default"}\x1b[0m\n`);
+      process.stdout.write("\x1b[2K\n");
+
+      for (let i = 0; i < rows.length; i++) {
+        const checked = ntfyConf[rows[i]] ? "x" : " ";
+        const label = rows[i] === "idle" ? "Notify on task complete (idle)" : "Notify on approval needed (input)";
+        const arrow = i === selected ? "\x1b[36m> " : "  ";
+        const color = i === selected ? "\x1b[36m" : "\x1b[0m";
+        process.stdout.write(`\x1b[2K  ${arrow}${color}[${checked}] ${label}\x1b[0m\n`);
+      }
+
+      process.stdout.write("\x1b[2K\n");
+      const status = statusMsg ? `  ${statusMsg}` : "";
+      process.stdout.write(`\x1b[2K  \x1b[90m[space] Toggle  [up/down] Navigate  [e] Edit  [t] Test  [q] Save & quit\x1b[0m${status}\n`);
+      process.stdout.write(`\x1b[2K\n`);
+    }
+
+    const stdin = process.stdin;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+
+    render(true);
+
+    function cleanup() {
+      stdin.removeListener("data", onKey);
+      stdin.setRawMode(false);
+      stdin.pause();
+    }
+
+    function save() {
+      ntfyConf.enabled = ntfyConf.idle || ntfyConf.input;
+      config.ntfy = ntfyConf;
+      writeConfig(config);
+    }
+
+    async function editFields() {
+      cleanup();
+      console.log("");
+
+      const newServer = await ntfyPrompt(`Server (${ntfyConf.server || "https://ntfy.sh"}): `);
+      if (newServer) ntfyConf.server = newServer;
+
+      const newTopic = await ntfyPrompt(`Topic (${ntfyConf.topic}): `);
+      if (newTopic) ntfyConf.topic = newTopic;
+
+      const priIdx = NTFY_PRIORITIES.indexOf(ntfyConf.priority || "default");
+      const newPri = await ntfyPrompt(`Priority [${NTFY_PRIORITIES.join("/")}] (${NTFY_PRIORITIES[priIdx]}): `);
+      if (newPri && NTFY_PRIORITIES.includes(newPri)) ntfyConf.priority = newPri;
+
+      // Re-enter raw mode and re-render
+      stdin.setRawMode(true);
+      stdin.resume();
+      stdin.setEncoding("utf8");
+      stdin.on("data", onKey);
+      render(true);
+    }
+
+    async function testNotification() {
+      cleanup();
+      statusMsg = "\x1b[33mSending...\x1b[0m";
+      // Re-enter raw mode to render
+      stdin.setRawMode(true);
+      stdin.resume();
+      stdin.setEncoding("utf8");
+      render(true);
+
+      try {
+        await ntfySendTest(ntfyConf);
+        statusMsg = "\x1b[32mSent!\x1b[0m";
+      } catch (e) {
+        statusMsg = `\x1b[31mFailed: ${e.message}\x1b[0m`;
+      }
+
+      stdin.on("data", onKey);
+      render();
+      setTimeout(() => { statusMsg = ""; render(); }, 3000);
+    }
+
+    async function onKey(key) {
+      if (key === "\x03") {
+        cleanup();
+        save();
+        console.log("");
+        process.exit(0);
+      }
+
+      if (key === "q" || key === "Q" || key === "\r" || key === "\n") {
+        cleanup();
+        save();
+        console.log(`\n  ntfy config saved (${ntfyConf.enabled ? "enabled" : "disabled"}).\n`);
+        resolve();
+        return;
+      }
+
+      if (key === " ") {
+        ntfyConf[rows[selected]] = !ntfyConf[rows[selected]];
+        render();
+        return;
+      }
+
+      if (key === "\x1b[A" || key === "k") {
+        selected = (selected - 1 + rows.length) % rows.length;
+        render();
+        return;
+      }
+
+      if (key === "\x1b[B" || key === "j") {
+        selected = (selected + 1) % rows.length;
+        render();
+        return;
+      }
+
+      if (key === "e" || key === "E") {
+        await editFields();
+        return;
+      }
+
+      if (key === "t" || key === "T") {
+        stdin.removeListener("data", onKey);
+        await testNotification();
+        return;
+      }
+    }
+
+    stdin.on("data", onKey);
+  });
+}
+
+async function ntfyTest() {
+  const config = readConfig();
+  const ntfyConf = config.ntfy;
+
+  if (!ntfyConf || !ntfyConf.topic) {
+    console.log("\n  ntfy not configured. Run 'agent-noti ntfy' first.\n");
+    return;
+  }
+
+  process.stdout.write("\n  Sending test notification...");
+  try {
+    await ntfySendTest(ntfyConf);
+    console.log(" sent!\n");
+  } catch (e) {
+    console.log(` failed: ${e.message}\n`);
+  }
+}
+
 function mute() {
   const config = readConfig();
   config.muted = true;
@@ -604,7 +838,7 @@ function volume(args) {
 
 function reset() {
   writeConfig({ idle: "default", input: "default", volume: 10, muted: false });
-  console.log("\n  Reset to defaults (theme=default, volume=10, unmuted).\n");
+  console.log("\n  Reset to defaults (theme=default, volume=10, unmuted, ntfy cleared).\n");
 }
 
 function applyPickerChoice(choice) {
@@ -651,6 +885,8 @@ async function main() {
     case "mute":     case "m":  mute(); break;
     case "unmute":   case "u":  unmute(); break;
     case "reset":    case "r":  reset(); break;
+    case "ntfy":     case "n":  await ntfy(); break;
+    case "ntfy-test": case "nt": await ntfyTest(); break;
     default:
       console.log("");
       console.log("  agent-noti install   (i)   Add hooks + pick theme");
@@ -662,6 +898,8 @@ async function main() {
       console.log("  agent-noti volume    (v)   Set volume <1-10>");
       console.log("  agent-noti mute      (m)   Mute notifications");
       console.log("  agent-noti unmute    (u)   Unmute notifications");
+      console.log("  agent-noti ntfy      (n)   Configure ntfy.sh push notifications");
+      console.log("  agent-noti ntfy-test (nt)  Send a test push notification");
       console.log("  agent-noti reset     (r)   Reset everything");
       console.log("");
   }

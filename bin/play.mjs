@@ -6,6 +6,7 @@
  *        node play.mjs --file <path>       — plays a file directly
  *
  * Respects ~/.agent-noti/config.json for mute and volume (1-10).
+ * Also sends ntfy.sh push notifications when configured.
  */
 
 import { execFile, exec } from "child_process";
@@ -69,36 +70,72 @@ function resolveSound(arg) {
   return findFile(`${arg}-idle`) || findFile(arg) || null;
 }
 
-const arg = process.argv[2];
-if (!arg) process.exit(0);
+const NTFY_MESSAGES = {
+  idle: { title: "Task Complete", tags: "white_check_mark", body: "Agent finished task" },
+  input: { title: "Approval Needed", tags: "warning", body: "Agent needs your approval" },
+};
 
-const config = readConfig();
+async function sendNtfy(event, config) {
+  try {
+    const ntfy = config.ntfy;
+    if (!ntfy || !ntfy.enabled || !ntfy.topic) return;
+    if (!ntfy[event]) return;
 
-// Mute check (skip for --file, which is used by picker previews)
-if (arg !== "--file" && config.muted) process.exit(0);
+    const msg = NTFY_MESSAGES[event];
+    if (!msg) return;
 
-const file = resolveSound(arg);
-if (!file) process.exit(1);
+    const server = (ntfy.server || "https://ntfy.sh").replace(/\/+$/, "");
+    const url = `${server}/${ntfy.topic}`;
 
-// Volume: 1-10 config → 0.0-1.0 native scale
-const vol = Math.max(1, Math.min(10, config.volume ?? 10));
-const volFloat = vol / 10;   // 0.1 – 1.0  (macOS, Windows)
-const volPct = vol * 10;     // 10  – 100   (Linux ffplay, mpv)
-const volPulse = Math.round(volFloat * 65536); // paplay scale
-
-const os = platform();
-
-if (os === "darwin") {
-  execFile("afplay", ["-v", String(volFloat), file], () => {});
-} else if (os === "win32") {
-  exec(
-    `powershell -NoProfile -Command "Add-Type -AssemblyName PresentationCore; $p = New-Object System.Windows.Media.MediaPlayer; $p.Open([uri]'${file.replace(/'/g, "''")}'); $p.Volume = ${volFloat}; $p.Play(); Start-Sleep -Seconds 3"`,
-    () => {}
-  );
-} else {
-  execFile("ffplay", ["-nodisp", "-autoexit", "-loglevel", "quiet", "-volume", String(volPct), file], (err) => {
-    if (err) execFile("paplay", ["--volume", String(volPulse), file], (err2) => {
-      if (err2) execFile("mpv", ["--no-video", `--volume=${volPct}`, file], () => {});
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        Title: msg.title,
+        Priority: ntfy.priority || "default",
+        Tags: msg.tags,
+      },
+      body: msg.body,
     });
-  });
+  } catch {}
 }
+
+(async () => {
+  const arg = process.argv[2];
+  if (!arg) process.exit(0);
+
+  const config = readConfig();
+
+  // Send ntfy push notification for actual events (not --file previews)
+  if (EVENTS.includes(arg)) {
+    await sendNtfy(arg, config);
+  }
+
+  // Mute check (skip for --file, which is used by picker previews)
+  if (arg !== "--file" && config.muted) process.exit(0);
+
+  const file = resolveSound(arg);
+  if (!file) process.exit(1);
+
+  // Volume: 1-10 config → 0.0-1.0 native scale
+  const vol = Math.max(1, Math.min(10, config.volume ?? 10));
+  const volFloat = vol / 10;   // 0.1 – 1.0  (macOS, Windows)
+  const volPct = vol * 10;     // 10  – 100   (Linux ffplay, mpv)
+  const volPulse = Math.round(volFloat * 65536); // paplay scale
+
+  const os = platform();
+
+  if (os === "darwin") {
+    execFile("afplay", ["-v", String(volFloat), file], () => {});
+  } else if (os === "win32") {
+    exec(
+      `powershell -NoProfile -Command "Add-Type -AssemblyName PresentationCore; $p = New-Object System.Windows.Media.MediaPlayer; $p.Open([uri]'${file.replace(/'/g, "''")}'); $p.Volume = ${volFloat}; $p.Play(); Start-Sleep -Seconds 3"`,
+      () => {}
+    );
+  } else {
+    execFile("ffplay", ["-nodisp", "-autoexit", "-loglevel", "quiet", "-volume", String(volPct), file], (err) => {
+      if (err) execFile("paplay", ["--volume", String(volPulse), file], (err2) => {
+        if (err2) execFile("mpv", ["--no-video", `--volume=${volPct}`, file], () => {});
+      });
+    });
+  }
+})();
